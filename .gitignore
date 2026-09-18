@@ -1,0 +1,30 @@
+*.iml
+.gradle
+.kotlin
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# ===== 开发期调试产物（adb 拉取的截图 / UI 树 dump / 数据库 dump）=====
+# 这些文件含模拟器里的业务数据（经期记录、待办内容等），属个人隐私，绝不入库。
+# 开头的 / 把匹配限定在项目根目录，不会误伤 app/src/main/res 下的图标资源。
+/*.png
+/*.xml
+/*.sql
+
+# ===== 预防性排除：数据库文件与签名密钥 =====
+# 当前仓库里没有这两类文件，但一旦将来生成（导出 db 备份 / keytool 建 keystore）
+# 必须拦在版本库外：keystore 泄露=签名身份泄露，db 泄露=用户隐私泄露。
+*.db
+*.jks
+*.keystore

@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      通知权限。Android 13（API 33）起通知需要运行时申请，
+      这里只是声明，实际弹窗在 P7 首次开启番茄提醒时触发。
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+      前台服务权限。Android 14（API 34）起，除了通用的 FOREGROUND_SERVICE，
+      还必须额外声明与 foregroundServiceType 一一对应的细分权限，
+      否则 startForeground() 会直接抛 SecurityException。
+
+      番茄钟不属于系统预定义的任何类型（不是音乐播放、不是导航、不是通话），
+      因此归入 specialUse。对应的 <service> 声明与 <property> 子元素在 P7 一并补上。
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <application
+        android:name=".DemoApplication"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Demo">
+
+        <!--
+          刻意不写 android:screenOrientation="portrait"。
+          Android 17（targetSdk 37）起，大屏设备（sw ≥ 600dp）会直接忽略方向与宽高比限制，
+          写死竖屏在手机上没影响，但在平板/折叠屏上会被系统无视并可能出现布局错乱。
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Demo"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          番茄钟前台服务。Android 14（API 34）起必须声明 foregroundServiceType
+          且与细分权限一一对应，否则 startForeground() 抛 SecurityException。
+          番茄钟不属于系统预定义类型，归入 specialUse；<property> 子元素向系统/
+          商店说明真实用途，不能省。
+        -->
+        <service
+            android:name=".service.PomodoroService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="pomodoro_focus_timer" />
+        </service>
+    </application>
+
+</manifest>
