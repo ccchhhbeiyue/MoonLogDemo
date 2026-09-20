@@ -113,6 +113,7 @@ class CalendarViewModel(
     fun upsertRecord(
         startDate: LocalDate,
         endDate: LocalDate?,
+        expectedDays: Int,
         flow: Int?,
         symptoms: Set<Symptom>,
         note: String?,
@@ -126,21 +127,54 @@ class CalendarViewModel(
                     original.copy(
                         startDate = startDate,
                         endDate = endDate,
+                        expectedDays = expectedDays,
                         flow = flow,
                         symptoms = symptomCodes,
                         note = note,
                     )
                 )
             } else {
-                periodRepository.insert(
-                    PeriodRecord(
+                // 走融合版 insert：与已有记录区间重叠时合并成一条，避免「一个月来两次」
+                periodRepository.insertOrMerge(
+                    record = PeriodRecord(
                         startDate = startDate,
                         endDate = endDate,
+                        expectedDays = expectedDays,
                         flow = flow,
                         symptoms = symptomCodes,
                         note = note,
-                    )
+                    ),
+                    today = LocalDate.now(),
                 )
+            }
+        }
+    }
+
+    /**
+     * 把进行中的经期结束于指定日（当日面板/历史页的「经期结束」按钮）。
+     * 结束后该日之后的浅粉带与结束按钮随之消失——渲染全部由 endDate 驱动，
+     * 不需要额外的「已结束」标志位。
+     */
+    fun endPeriodOn(record: PeriodRecord, date: LocalDate) {
+        viewModelScope.launch {
+            periodRepository.update(record.copy(endDate = date))
+        }
+    }
+
+    /**
+     * 截断：删掉「选中日及之后」的经期部分，之前的保留（当日面板的「删除这天及之后」）。
+     * 例：预计 18~22，实际 20 号就结束了 → 在 21 号点删除 → 记录变 18~20；
+     * 若选中日恰是开始日，之前没有任何天可保留 → 整条删除。
+     * 对进行中记录同样适用：截断即同时结束（endDate 补上）。
+     * 历史页与编辑对话框里的「删除」仍是整条语义，两处入口分开。
+     */
+    fun truncatePeriodAt(record: PeriodRecord, date: LocalDate) {
+        viewModelScope.launch {
+            val newEnd = date.minusDays(1)
+            if (newEnd.isBefore(record.startDate)) {
+                periodRepository.delete(record)
+            } else {
+                periodRepository.update(record.copy(endDate = newEnd))
             }
         }
     }
@@ -157,11 +191,15 @@ class CalendarViewModel(
      */
     fun confirmPredictedPeriod(prediction: PredictionResult) {
         viewModelScope.launch {
-            periodRepository.insert(
-                PeriodRecord(
+            periodRepository.insertOrMerge(
+                record = PeriodRecord(
                     startDate = prediction.nextPeriodStart,
                     endDate = prediction.nextPeriodEnd,
-                )
+                    expectedDays = ChronoUnit.DAYS.between(
+                        prediction.nextPeriodStart, prediction.nextPeriodEnd
+                    ).toInt() + 1,
+                ),
+                today = LocalDate.now(),
             )
         }
     }

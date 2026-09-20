@@ -90,7 +90,8 @@ fun PeriodHistoryScreen(
                     PeriodHistoryItem(
                         record = record,
                         onClick = { editing = record },
-                        onDelete = { viewModel.deleteRecord(record) }
+                        onDelete = { viewModel.deleteRecord(record) },
+                        onEndPeriod = { viewModel.endPeriodOn(record, LocalDate.now()) },
                     )
                 }
             }
@@ -102,10 +103,11 @@ fun PeriodHistoryScreen(
             startDate = record.startDate,
             initialRecord = record,
             onDismiss = { editing = null },
-            onSave = { endDate, flow, symptoms, note ->
+            onSave = { endDate, expectedDays, flow, symptoms, note ->
                 viewModel.upsertRecord(
                     startDate = record.startDate,
                     endDate = endDate,
+                    expectedDays = expectedDays,
                     flow = flow,
                     symptoms = symptoms,
                     note = note,
@@ -121,14 +123,16 @@ fun PeriodHistoryScreen(
     }
 }
 
-/** 单条历史记录卡片：区间 + 天数 + 流量 + 症状，右侧删除按钮 */
+/** 单条历史记录卡片：区间 + 天数 + 流量 + 症状；进行中额外给「结束」按钮（结束于今天） */
 @Composable
 private fun PeriodHistoryItem(
     record: PeriodRecord,
     onClick: () -> Unit,
     onDelete: () -> Unit,
+    onEndPeriod: () -> Unit,
 ) {
-    val days = ChronoUnit.DAYS.between(record.startDate, record.endDate ?: record.startDate).toInt() + 1
+    val ongoing = record.endDate == null
+    val days = ChronoUnit.DAYS.between(record.startDate, record.endDate ?: LocalDate.now()).toInt() + 1
     val symptomLabels = Symptom.parseCodes(record.symptoms).joinToString("、") { it.label }
 
     Card(
@@ -150,7 +154,7 @@ private fun PeriodHistoryItem(
                 )
                 Text(
                     text = buildString {
-                        append("$days 天")
+                        if (ongoing) append("进行中 · 已 $days 天") else append("$days 天")
                         record.flow?.let { append(" · 流量${flowLabel(it)}") }
                         if (symptomLabels.isNotEmpty()) append(" · $symptomLabels")
                     },
@@ -158,8 +162,13 @@ private fun PeriodHistoryItem(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            TextButton(onClick = onDelete) {
-                Text("删除", color = MaterialTheme.colorScheme.error)
+            Column {
+                if (ongoing) {
+                    TextButton(onClick = onEndPeriod) { Text("结束") }
+                }
+                TextButton(onClick = onDelete) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
             }
         }
     }

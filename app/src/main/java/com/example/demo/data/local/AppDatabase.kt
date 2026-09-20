@@ -38,7 +38,7 @@ import com.example.demo.data.local.entity.WorkLog
         UserSetting::class,
         Plan::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = true
 )
 @TypeConverters(DateConverters::class)
@@ -92,6 +92,15 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * v4 → v5：period_record 加 expected_days 列（进行中经期的预计天数）。
+         * 默认 5 天：存量行免回填即归入合理语义（已结束的记录渲染不看这列）；
+         * 列定义必须与 Entity 逐字对齐。
+         */
+        private val MIG_4_5 = Migration(4, 5) { db ->
+            db.execSQL("ALTER TABLE `period_record` ADD COLUMN `expected_days` INTEGER NOT NULL DEFAULT 5")
+        }
+
+        /**
          * 双重检查锁的单例。数据库连接是重资源，全应用只应有一个实例，
          * 等价于后端的单例 DataSource / 连接池。
          *
@@ -113,7 +122,7 @@ abstract class AppDatabase : RoomDatabase() {
                 DATABASE_NAME
             )
                 // 显式迁移优先：升级时保留用户数据。
-                .addMigrations(MIG_1_2, MIG_2_3, MIG_3_4)
+                .addMigrations(MIG_1_2, MIG_2_3, MIG_3_4, MIG_4_5)
                 // demo 阶段的安全网：未覆盖的版本跨度才删库重建。
                 // ⚠️ 正式版必须删掉这行，改为手写 Migration，否则用户升级即丢数据。
                 .fallbackToDestructiveMigration(dropAllTables = true)

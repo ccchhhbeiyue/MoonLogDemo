@@ -3,6 +3,7 @@ package com.example.demo.navigation
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -36,6 +37,13 @@ import com.example.demo.ui.todo.TodoScreen
  * 底部栏为什么放在外层 Scaffold 而不是每个页面里各写一份：
  * 二级页面（统计、设置）需要**盖住**底部栏，只有把底部栏提到路由之外，
  * 才能用"当前路由是否属于四个 Tab"这一个条件统一控制它的显隐。
+ *
+ * contentWindowInsets 置零是刻意的：系统栏避让交给内层各页自己的 Scaffold
+ * （它们的 TopAppBar / NavigationBar 会自行把背景撑进状态栏、导航栏区域）。
+ * 外层若用默认值，会把状态栏高度作为 padding 加在 NavHost 上、同时把 insets
+ * 标记为已消费，内层组件读到 0 不再撑高——结果就是顶部多一截空白、
+ * 底部导航栏下方露出主题白色背景（真机上表现为"屏幕不适配"）。
+ * 注意置零只去掉系统栏部分，bottomBar 的高度仍会计入 innerPadding。
  */
 @Composable
 fun DemoApp(navController: NavHostController = rememberNavController()) {
@@ -46,6 +54,7 @@ fun DemoApp(navController: NavHostController = rememberNavController()) {
     val isTopLevel = currentRoute in TopLevelDestination.routes
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             if (isTopLevel) {
                 NavigationBar {

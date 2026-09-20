@@ -5,6 +5,7 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Update
 import com.example.demo.data.local.entity.PeriodRecord
 import kotlinx.coroutines.flow.Flow
@@ -72,4 +73,24 @@ interface PeriodRecordDao {
 
     @Query("DELETE FROM period_record WHERE start_date = :date")
     suspend fun deleteByStartDate(date: LocalDate): Int
+
+    @Query("DELETE FROM period_record WHERE id = :id")
+    suspend fun deleteById(id: Long): Int
+
+    /**
+     * 区间融合写入：先删被合并的旧行，再写入融合结果，单事务保证「删+写」原子。
+     *
+     * 为什么融合不在 Repository 里顺序调 delete/update：两步之间若进程被杀，
+     * 会留下「旧行已删、新行未写」的丢数据窗口；@Transaction 把两步合成一个
+     * 数据库事务（类比后端 Service 方法上的 @Transactional）。
+     *
+     * @param deleteIds 被融合吞掉的旧行 id
+     * @param merged 融合结果；id==0 表示开始日不与任何旧行重合、走 insert，
+     *   否则 update 该 id（开始日 UNIQUE 索引要求融合行复用最小开始日那行的 id）
+     */
+    @Transaction
+    suspend fun mergePeriods(deleteIds: List<Long>, merged: PeriodRecord): Long {
+        deleteIds.forEach { deleteById(it) }
+        return if (merged.id == 0L) insert(merged) else update(merged).toLong()
+    }
 }

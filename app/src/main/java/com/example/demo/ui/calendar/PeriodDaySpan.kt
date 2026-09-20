@@ -1,6 +1,7 @@
 package com.example.demo.ui.calendar
 
 import com.example.demo.data.local.entity.PeriodRecord
+import com.example.demo.data.local.entity.effectiveEnd
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
 
@@ -30,15 +31,16 @@ data class PeriodDaySpan(
  * 是 O(天数 × 记录数)；先展开成 Map 后每格 O(1) 查表。
  * 类比后端：把「每次请求都扫全表」改成「先建索引，请求查索引」。
  *
- * ## endDate 为 null 的处理
- * 经期进行中/未回填时 endDate=null，覆盖范围退化为「仅开始日那一天」，
- * 与 DAO 里 COALESCE(end_date, start_date) 的语义保持一致；
- * 否则一条未结束的记录会把之后所有日子都染红。
+ * ## 进行中（endDate 为 null）的处理
+ * 覆盖范围取 [effectiveEnd]：预计天数还没走完时画到预计结束日
+ * （未来部分由 DayCell 染浅粉、已发生部分染深色），已经超过预计天数
+ * 还没点结束时至少覆盖到今天（「尚未结束就连续到当天」）。
+ * 不再退化成「仅开始日一天」，否则进行中的经期在日历上只剩孤零零一个格子。
  */
-fun expandPeriodSpans(records: List<PeriodRecord>): Map<LocalDate, PeriodDaySpan> {
+fun expandPeriodSpans(records: List<PeriodRecord>, today: LocalDate): Map<LocalDate, PeriodDaySpan> {
     val result = mutableMapOf<LocalDate, PeriodDaySpan>()
     for (record in records) {
-        val end = record.endDate ?: record.startDate
+        val end = record.effectiveEnd(today)
         val totalDays = ChronoUnit.DAYS.between(record.startDate, end).toInt() + 1
         var current = record.startDate
         var index = 0

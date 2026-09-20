@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -37,6 +39,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -72,6 +75,7 @@ import com.kizitonwose.calendar.compose.HorizontalCalendar
 import com.kizitonwose.calendar.compose.rememberCalendarState
 import com.kizitonwose.calendar.core.CalendarDay
 import com.kizitonwose.calendar.core.DayPosition
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.DayOfWeek
 import java.time.LocalDate
@@ -135,7 +139,19 @@ fun CalendarScreen(
 
     val periodRecords by viewModel.periodRecords.collectAsStateWithLifecycle()
     val selectedDate by selectedDateViewModel.selectedDate.collectAsStateWithLifecycle()
-    val spans = remember(periodRecords) { expandPeriodSpans(periodRecords) }
+    // today 不能 remember 一次就完：跨天后「已发生/未来」的分界线要前移
+    // （进行中经期每新一天加深一格）。每分钟醒一次检查日期，变了才推新值，
+    // 一天只触发一次重组，成本可忽略。
+    val today by produceState(initialValue = LocalDate.now()) {
+        while (true) {
+            delay(60_000)
+            val now = LocalDate.now()
+            if (now != value) value = now
+        }
+    }
+    val spans = remember(periodRecords, today) { expandPeriodSpans(periodRecords, today) }
+    // 进行中的经期（升序列表里尾部那条 end_date 为 null 的）：当日面板的「结束」入口靠它
+    val ongoingRecord = remember(periodRecords) { periodRecords.lastOrNull { it.endDate == null } }
     val prediction by viewModel.prediction.collectAsStateWithLifecycle()
     val showFertile by viewModel.showFertileWindow.collectAsStateWithLifecycle()
     // 开关一变就重建 marks Map：隐藏时 Map 里根本没有易孕/排卵日期，DayCell 查表自然 miss
@@ -148,7 +164,6 @@ fun CalendarScreen(
     // 选中日一变就把它推进 CalendarViewModel，驱动 panelTodos 用 flatMapLatest 换订阅对应日期的待办
     LaunchedEffect(selectedDate) { viewModel.setPanelDate(selectedDate) }
 
-    val today = remember { LocalDate.now() }
     val currentMonth = remember { YearMonth.now() }
     val calendarState = rememberCalendarState(
         startMonth = currentMonth.minusMonths(MONTH_RANGE),
@@ -213,6 +228,7 @@ fun CalendarScreen(
                         mark = predictionMarks[day.date],
                         isSelected = day.date == selectedDate,
                         isToday = day.date == today,
+                        today = today,
                         showTodoDot = day.date in todoDotDates,
                         showPlanDot = planDotStart?.let { !day.date.isBefore(it) } == true,
                         onClick = {
@@ -237,13 +253,16 @@ fun CalendarScreen(
                 selectedDate = selectedDate,
                 span = spans[selectedDate],
                 isToday = selectedDate == today,
+                today = today,
+                ongoingRecord = ongoingRecord,
                 todos = panelTodos,
                 onToggleTodo = { todo -> viewModel.toggleTodoDone(todo) },
                 onAddTodo = { creatingTodo = true },
                 plans = panelPlans,
                 onRecord = { dialogState = PeriodDialogState.New(selectedDate) },
                 onEdit = { record -> dialogState = PeriodDialogState.Edit(record) },
-                onDelete = { record -> viewModel.deleteRecord(record) },
+                onEndPeriod = { record, date -> viewModel.endPeriodOn(record, date) },
+                onTruncate = { record, date -> viewModel.truncatePeriodAt(record, date) },
                 onNavigateToHistory = onNavigateToHistory,
             )
         }
@@ -259,10 +278,11 @@ fun CalendarScreen(
             startDate = startDate,
             initialRecord = editing,
             onDismiss = { dialogState = null },
-            onSave = { endDate, flow, symptoms, note ->
+            onSave = { endDate, expectedDays, flow, symptoms, note ->
                 viewModel.upsertRecord(
                     startDate = startDate,
                     endDate = endDate,
+                    expectedDays = expectedDays,
                     flow = flow,
                     symptoms = symptoms,
                     note = note,
@@ -294,13 +314,7 @@ fun CalendarScreen(
                 },
                 confirmButton = {
                     TextButton(onClick = {
-                        viewModel.upsertRecord(
-                            startDate = p.nextPeriodStart,
-                            endDate = p.nextPeriodEnd,
-                            flow = null,
-                            symptoms = emptySet(),
-                            note = null,
-                        )
+                        viewModel.confirmPredictedPeriod(p)
                         confirmPredicted = false
                     }) { Text("确认") }
                 },
@@ -327,9 +341,11 @@ fun CalendarScreen(
  * 单个日期格子。P3 在 P2 三态（选中/今天/跨月淡化）基础上叠加经期实色带。
  *
  * 渲染优先级（写清避免叠加混乱）：
- * 1. 背景：有 [span] → 经期实色带（厚度 2/3 格高、圆角由 role+列位置决定）；无 span 且选中 → 浅灰实心圆；
+ * 1. 背景：有 [span] → 经期色带（厚度 2/3 格高、圆角由 role+列位置决定），
+ *    颜色按「是否已发生」分：≤今天深色、未来浅粉（进行中经期的预期剩余部分）；
+ *    无 span 且选中 → 浅灰实心圆；
  * 2. 描边：今天 → todayRing 圆环（无论是否经期，今天必须可见）；
- *    选中且处于经期内 → 白色圆环（实色带上用白环表示选中）；
+ *    选中且处于经期内 → 圆环（深色带上白环、浅粉带上深色环）；
  * 3. 跨月补位日整体降低透明度。
  */
 @Composable
@@ -339,15 +355,19 @@ private fun BoxScope.DayCell(
     mark: PredictionMark?,
     isSelected: Boolean,
     isToday: Boolean,
+    today: LocalDate,
     showTodoDot: Boolean,
     showPlanDot: Boolean,
     onClick: () -> Unit
 ) {
     val isOutMonth = day.position != DayPosition.MonthDate
     val periodColors = LocalPeriodColors.current
+    // 经期日的深浅只由「是否已发生」决定，与记录来源无关：
+    // 已发生=深色事实，未来=浅色预期（进行中经期的剩余部分、确认后的预测区间都走这里）
+    val spanIsFuture = span != null && day.date.isAfter(today)
 
     val textColor = when {
-        span != null -> periodColors.onPeriod
+        span != null && !spanIsFuture -> periodColors.onPeriod
         mark?.kind == PredictionMark.Kind.OVULATION -> MaterialTheme.colorScheme.onSurface
         isSelected -> MaterialTheme.colorScheme.onSurface
         isOutMonth -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
@@ -361,7 +381,7 @@ private fun BoxScope.DayCell(
             .clickable(enabled = !isOutMonth, onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        // 背景层：经期实色带（厚度 2/3 格高、垂直居中）或选中实心圆
+        // 背景层：经期色带（厚度 2/3 格高、垂直居中）或选中实心圆
         if (span != null) {
             val column = (day.date.dayOfWeek.value - FIRST_DAY_OF_WEEK.value + 7) % 7
             val roundLeft = span.role == PeriodDayRole.SINGLE ||
@@ -374,7 +394,9 @@ private fun BoxScope.DayCell(
                     .fillMaxWidth()
                     .fillMaxHeight(BAND_HEIGHT_FRACTION)
                     .clip(spanShape(roundLeft, roundRight))
-                    .background(periodColors.periodConfirmed)
+                    .background(
+                        if (spanIsFuture) periodColors.periodPredicted else periodColors.periodConfirmed
+                    )
             )
         } else if (mark != null) {
             // 底色带：预测经期=浅粉；易孕窗与排卵日=浅紫（排卵日垫易孕底色，保证带子连续不断开）
@@ -415,11 +437,17 @@ private fun BoxScope.DayCell(
             )
         }
 
-        // 描边层：今天圆环；选中且处于经期内用白环
+        // 描边层：今天圆环；选中且处于经期内用环（深色带上白环、浅粉带上深色环）
         if (isToday) {
             Box(Modifier.align(Alignment.Center).fillMaxSize(MARK_SIZE_FRACTION).border(1.5.dp, periodColors.todayRing, CircleShape))
         } else if (isSelected && span != null) {
-            Box(Modifier.align(Alignment.Center).fillMaxSize(MARK_SIZE_FRACTION).border(2.dp, periodColors.onPeriod, CircleShape))
+            Box(
+                Modifier.align(Alignment.Center).fillMaxSize(MARK_SIZE_FRACTION).border(
+                    2.dp,
+                    if (spanIsFuture) MaterialTheme.colorScheme.onSurface else periodColors.onPeriod,
+                    CircleShape,
+                )
+            )
         } else if (isSelected && mark != null) {
             Box(Modifier.align(Alignment.Center).fillMaxSize(MARK_SIZE_FRACTION).border(1.5.dp, MaterialTheme.colorScheme.onSurface, CircleShape))
         }
@@ -522,21 +550,28 @@ private fun WeekdayHeaderRow() {
 }
 
 /**
- * 当日详情面板（P3）：显示选中日期的经期状态，并提供记录/编辑/删除/历史入口。
+ * 当日详情面板（P3）：显示选中日期的经期状态，并提供记录/编辑/截断/历史入口。
  * P5/P6/P7 会在此继续叠加待办/工作/专注信息。
+ *
+ * 面板里的「删除」是截断语义（只去掉选中日及之后的部分），
+ * 历史页与编辑对话框的「删除」仍是整条删除，两处入口分开。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DayDetailPanel(
     selectedDate: LocalDate,
     span: PeriodDaySpan?,
     isToday: Boolean,
+    today: LocalDate,
+    ongoingRecord: PeriodRecord?,
     todos: List<Todo>,
     onToggleTodo: (Todo) -> Unit,
     onAddTodo: () -> Unit,
     plans: List<PlanDayItem>,
     onRecord: () -> Unit,
     onEdit: (PeriodRecord) -> Unit,
-    onDelete: (PeriodRecord) -> Unit,
+    onEndPeriod: (PeriodRecord, LocalDate) -> Unit,
+    onTruncate: (PeriodRecord, LocalDate) -> Unit,
     onNavigateToHistory: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -567,6 +602,7 @@ private fun DayDetailPanel(
             Text(
                 text = buildString {
                     append("经期第 ${span.dayIndex} 天 / 共 ${span.totalDays} 天")
+                    if (span.record.endDate == null) append(" · 进行中")
                     span.record.flow?.let { append(" · 流量${flowLabel(it)}") }
                 },
                 style = MaterialTheme.typography.bodyLarge,
@@ -590,16 +626,28 @@ private fun DayDetailPanel(
         }
 
         Spacer(modifier = Modifier.height(12.dp))
-        Row {
-            if (span == null) {
-                TextButton(onClick = onRecord) { Text("+ 记录经期") }
-            } else {
+        // FlowRow：按钮尽量排在同一排，宽度不够时按顺序换行依次排开（不会一个按钮占一行）
+        FlowRow {
+            // 「+ 记录经期」始终显示：选中日已在经期内时点它=补记/延续，
+            // 数据层 insertOrMerge 会把它融合进同一条记录，不会一个月出现两次
+            TextButton(onClick = onRecord) { Text("+ 记录经期") }
+            if (span != null) {
                 TextButton(onClick = { onEdit(span.record) }) { Text("编辑") }
-                TextButton(onClick = { onDelete(span.record) }) {
+                // 文案叫「删除」但语义是截断：只去掉选中日及之后的部分（如预计 18~22、
+                // 实际 20 结束 → 在 21 号点它 → 变 18~20）；选中开始日才会整条删除
+                TextButton(onClick = { onTruncate(span.record, selectedDate) }) {
                     Text("删除", color = MaterialTheme.colorScheme.error)
                 }
             }
             TextButton(onClick = onNavigateToHistory) { Text("历史记录") }
+        }
+        // 进行中经期的「结束」入口：今天及之后任何一天（到当月末乃至更远）都可作为结束日，
+        // 即使选中日已超出预计天数的浅粉带——经期比预期长是常事。
+        // 点完后 endDate 落库，该日之后的浅粉带与本按钮随之消失（渲染全由 endDate 驱动）。
+        if (ongoingRecord != null && !selectedDate.isBefore(today)) {
+            TextButton(onClick = { onEndPeriod(ongoingRecord, selectedDate) }) {
+                Text("经期结束")
+            }
         }
 
         // 当天待办（P5）：日历下方直接展示 / 勾选选中日的待办

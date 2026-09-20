@@ -50,9 +50,11 @@ private const val MAX_DURATION_DAYS = 10
  * ## 结束日为什么用「持续天数」而不是日期选择器
  * 经期长度有明确的医学常识区间（3~7 天），用天数 stepper 比 Material DatePicker
  * 更贴合语义、也更省交互；「尚未结束」开关对应 endDate=null（经期进行中）。
+ * 进行中时 stepper 依然显示并改叫「预计天数」：日历据此把未来部分画成浅粉带
+ * （已发生部分深色），保存后存入 expected_days 列。
  *
  * @param initialRecord 非空表示编辑已有记录并预填表单；为空表示新建。
- * @param onSave 保存回调，endDate 已按 ongoing/durationDays 算好。
+ * @param onSave 保存回调，endDate 已按 ongoing/durationDays 算好，expectedDays 为 stepper 当前值。
  * @param onDelete 非空时显示「删除」按钮（编辑态）。
  */
 @OptIn(ExperimentalLayoutApi::class)
@@ -61,7 +63,7 @@ fun RecordPeriodDialog(
     startDate: LocalDate,
     initialRecord: PeriodRecord? = null,
     onDismiss: () -> Unit,
-    onSave: (endDate: LocalDate?, flow: Int?, symptoms: Set<Symptom>, note: String?) -> Unit,
+    onSave: (endDate: LocalDate?, expectedDays: Int, flow: Int?, symptoms: Set<Symptom>, note: String?) -> Unit,
     onDelete: (() -> Unit)? = null,
 ) {
     var ongoing by remember { mutableStateOf(initialRecord?.endDate == null) }
@@ -69,6 +71,7 @@ fun RecordPeriodDialog(
         mutableIntStateOf(
             initialRecord?.endDate
                 ?.let { ChronoUnit.DAYS.between(startDate, it).toInt() + 1 }
+                ?: initialRecord?.expectedDays
                 ?: DEFAULT_DURATION_DAYS
         )
     }
@@ -96,6 +99,13 @@ fun RecordPeriodDialog(
                 if (!ongoing) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("持续天数", modifier = Modifier.weight(1f))
+                        TextButton(onClick = { if (durationDays > 1) durationDays-- }) { Text("−") }
+                        Text("${durationDays} 天")
+                        TextButton(onClick = { if (durationDays < MAX_DURATION_DAYS) durationDays++ }) { Text("+") }
+                    }
+                } else {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("预计天数", modifier = Modifier.weight(1f))
                         TextButton(onClick = { if (durationDays > 1) durationDays-- }) { Text("−") }
                         Text("${durationDays} 天")
                         TextButton(onClick = { if (durationDays < MAX_DURATION_DAYS) durationDays++ }) { Text("+") }
@@ -151,7 +161,7 @@ fun RecordPeriodDialog(
         confirmButton = {
             TextButton(onClick = {
                 val endDate = if (ongoing) null else startDate.plusDays(durationDays.toLong() - 1)
-                onSave(endDate, flow, symptoms, note.ifBlank { null })
+                onSave(endDate, durationDays, flow, symptoms, note.ifBlank { null })
             }) { Text("保存") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },

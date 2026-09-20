@@ -32,6 +32,15 @@ data class PeriodRecord(
     @ColumnInfo(name = "end_date")
     val endDate: LocalDate? = null,
 
+    /**
+     * 预计经期天数：进行中（[endDate]==null）时日历据此画「预期剩余」的浅粉带，
+     * 已发生部分（≤今天）画深色、未来部分画浅色，每过一天深色往前推一格。
+     * 结束后渲染以 [endDate] 为准，本字段仅作留痕与区间融合时的跨度下限。
+     * 默认 5 与 MIG_4_5 的 DEFAULT 5 对齐，存量行免回填。
+     */
+    @ColumnInfo(name = "expected_days")
+    val expectedDays: Int = 5,
+
     /** 经量：1 轻 / 2 中 / 3 重；null 表示未记录 */
     val flow: Int? = null,
 
@@ -46,3 +55,14 @@ data class PeriodRecord(
     @ColumnInfo(name = "updated_at")
     val updatedAt: Long = System.currentTimeMillis()
 )
+
+/**
+ * 记录在日历上的实际覆盖末日，渲染与区间融合共用的单一事实来源。
+ *
+ * - 已结束：就是 [PeriodRecord.endDate]；
+ * - 进行中：取「预计结束日」与今天的较晚者——预计天数还没走完时画到预计结束
+ *   （未来部分渲染成浅粉），已经超过预计天数还没点结束时至少覆盖到今天
+ *   （「尚未结束就连续到当天」）。
+ */
+fun PeriodRecord.effectiveEnd(today: LocalDate): LocalDate =
+    endDate ?: maxOf(today, startDate.plusDays(expectedDays.toLong() - 1))

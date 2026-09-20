@@ -2,6 +2,7 @@ package com.example.demo.data.repository
 
 import com.example.demo.data.local.dao.PeriodRecordDao
 import com.example.demo.data.local.entity.PeriodRecord
+import com.example.demo.data.local.entity.effectiveEnd
 import kotlinx.coroutines.flow.Flow
 import java.time.LocalDate
 
@@ -57,6 +58,62 @@ class PeriodRepository(private val dao: PeriodRecordDao) {
     suspend fun insert(record: PeriodRecord): Long {
         requireValidRange(record)
         return dao.insert(record)
+    }
+
+    /**
+     * 新增记录；若与已有记录区间重叠则融合成一条（「同一段生理过程不会来两次」）。
+     *
+     * ## 为什么融合收口在这里而不是 ViewModel
+     * 融合是数据不变量，与「结束日不早于开始日」同级；放在 Repository
+     * 才能让所有调用方（日历页/历史页/未来的导入功能）都受保护。
+     *
+     * ## 重叠判定为什么用 effectiveEnd 而非 end_date
+     * 进行中记录的 end_date 为 null，但它在日历上实际覆盖到今天；
+     * 若按 null 退化成开始日一天判定，12 号开始的那条进行中记录
+     * 就挡不住 19 号的补录，会出现两条重叠记录。
+     *
+     * ## 为什么衔接（紧挨着前一天/后一天）也算同一段
+     * 「系统默认 22 号结束，但用户发现没完全结束，在 23 号补记」——
+     * 医学上同一段生理过程不会隔一天再来一次，衔接的新增应视为延续而非新周期；
+     * 正常两次经期间隔 20+ 天，不会误触这条规则。
+     *
+     * ## 融合规则
+     * - 开始日取最小；结束日全非空取最大，任一进行中则融合后仍进行中；
+     * - 预计天数取各条最大（渲染时还有 max(today) 兜底）；
+     * - flow/symptoms/note 用新记录的非空值覆盖（用户刚填的意图优先）；
+     * - 保留最小开始日那行的 id（start_date UNIQUE 索引），其余旧行删除，
+     *   删+写由 DAO 的 @Transaction 保证原子。
+     */
+    suspend fun insertOrMerge(record: PeriodRecord, today: LocalDate): Long {
+        requireValidRange(record)
+        val newEnd = record.effectiveEnd(today)
+        val overlapped = dao.getAllAscending().filter { old ->
+            val oldEnd = old.effectiveEnd(today)
+            val overlaps = !record.startDate.isAfter(oldEnd) && !old.startDate.isAfter(newEnd)
+            val adjacent = record.startDate == oldEnd.plusDays(1) || old.startDate == newEnd.plusDays(1)
+            overlaps || adjacent
+        }
+        if (overlapped.isEmpty()) return dao.insert(record)
+
+        val pool = overlapped + record
+        val keep = pool.minByOrNull { it.startDate }!!
+        // 用 id 而非 startDate 判定 keep 是否为新记录：startDate 相同时 minByOrNull 返回
+        // 排在前面的旧行（pool = overlapped + record），若误判为新记录会走 INSERT，
+        // 而 keep 旧行未被删除 → start_date UNIQUE 索引直接撞约束崩溃
+        val keepIsNew = keep.id == 0L
+        val merged = PeriodRecord(
+            id = if (keepIsNew) 0 else keep.id,
+            startDate = keep.startDate,
+            endDate = if (pool.all { it.endDate != null }) pool.maxOf { it.endDate!! } else null,
+            expectedDays = pool.maxOf { it.expectedDays },
+            flow = record.flow ?: keep.flow,
+            symptoms = record.symptoms.ifBlank { keep.symptoms },
+            note = record.note ?: keep.note,
+            createdAt = keep.createdAt,
+        )
+        // 只删被吞掉的旧行：keep 行要留着承接 update（先删它再 update 会更新 0 行→丢数据）
+        val deleteIds = overlapped.filter { it.id != keep.id }.map { it.id }
+        return dao.mergePeriods(deleteIds, merged)
     }
 
     suspend fun update(record: PeriodRecord): Int {

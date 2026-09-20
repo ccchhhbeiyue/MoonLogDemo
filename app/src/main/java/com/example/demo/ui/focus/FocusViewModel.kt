@@ -6,6 +6,7 @@ import com.example.demo.data.repository.PomodoroRepository
 import com.example.demo.data.repository.SettingRepository
 import com.example.demo.data.repository.TodoRepository
 import com.example.demo.domain.model.PomodoroLinkType
+import com.example.demo.domain.model.TimerMode
 import com.example.demo.service.PomodoroService
 import com.example.demo.service.TimerUiState
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -83,9 +84,35 @@ class FocusViewModel(
         _selectedLink.value = candidate
     }
 
+    /**
+     * IDLE 时选择的计时模式：番茄钟（用设置页时长+自动休息循环）/
+     * 自定义倒计时（用 [customMinutes]）/ 正计时（不限时）。
+     * 放 VM 而非 Screen 本地 remember：切 Tab 回来选择不丢（同 selectedTaskFilter 范式）。
+     */
+    private val _selectedMode = MutableStateFlow(TimerMode.POMODORO)
+    val selectedMode: StateFlow<TimerMode> = _selectedMode.asStateFlow()
+
+    /** 自定义倒计时时长（分钟），仅 COUNTDOWN 用；滚轮/预设写入并钳制在 1..240。 */
+    private val _customMinutes = MutableStateFlow(DEFAULT_WORK_MINUTES)
+    val customMinutes: StateFlow<Int> = _customMinutes.asStateFlow()
+
+    fun selectMode(mode: TimerMode) {
+        _selectedMode.value = mode
+    }
+
+    fun adjustCustomMinutes(delta: Int) {
+        _customMinutes.value = (_customMinutes.value + delta).coerceIn(MIN_CUSTOM_MINUTES, MAX_CUSTOM_MINUTES)
+    }
+
+    fun setCustomMinutes(value: Int) {
+        _customMinutes.value = value.coerceIn(MIN_CUSTOM_MINUTES, MAX_CUSTOM_MINUTES)
+    }
+
     private companion object {
         const val SUBSCRIPTION_TIMEOUT_MILLIS = 5_000L
         const val DEFAULT_WORK_MINUTES = 25
+        const val MIN_CUSTOM_MINUTES = 1
+        const val MAX_CUSTOM_MINUTES = 240
     }
 }
 

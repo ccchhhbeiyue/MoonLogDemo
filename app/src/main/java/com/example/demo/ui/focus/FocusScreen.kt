@@ -13,13 +13,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -32,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -71,8 +73,11 @@ fun FocusScreen(modifier: Modifier = Modifier) {
     val todayMinutes by viewModel.todayMinutes.collectAsStateWithLifecycle()
     val candidates by viewModel.linkCandidates.collectAsStateWithLifecycle()
     val selectedLink by viewModel.selectedLink.collectAsStateWithLifecycle()
+    val selectedMode by viewModel.selectedMode.collectAsStateWithLifecycle()
+    val customMinutes by viewModel.customMinutes.collectAsStateWithLifecycle()
 
     var pickingLink by remember { mutableStateOf(false) }
+    var showingMinutesInput by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -85,16 +90,28 @@ fun FocusScreen(modifier: Modifier = Modifier) {
         ) {
             permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        // 计划时长按模式取：番茄钟=设置页工作时长；倒计时=自选分钟；正计时不限时传 0
+        val plannedMinutes = when (selectedMode) {
+            TimerMode.POMODORO -> workMinutes
+            TimerMode.COUNTDOWN -> customMinutes
+            TimerMode.COUNTUP -> 0
+        }
         PomodoroService.start(
             context = context,
-            plannedMinutes = workMinutes,
+            plannedMinutes = plannedMinutes,
+            mode = selectedMode,
             link = selectedLink?.type ?: PomodoroLinkType.NONE,
             linkId = selectedLink?.id,
         )
     }
 
-    // IDLE 时圆盘显示「即将开始的完整时长」，而非 00:00 的空盘
-    val idleMillis = workMinutes * 60_000L
+    // IDLE 时圆盘显示「即将开始的完整时长」，而非 00:00 的空盘；正计时无目标时长，空盘即可
+    val idleMinutes = when (selectedMode) {
+        TimerMode.POMODORO -> workMinutes
+        TimerMode.COUNTDOWN -> customMinutes
+        TimerMode.COUNTUP -> 0
+    }
+    val idleMillis = idleMinutes * 60_000L
     val dialRemaining = if (timer.phase == TimerPhase.IDLE) idleMillis else timer.remainingMillis
     val dialTotal = if (timer.phase == TimerPhase.IDLE) idleMillis else timer.totalMillis
 
@@ -103,11 +120,11 @@ fun FocusScreen(modifier: Modifier = Modifier) {
         topBar = { TopAppBar(title = { Text("专注") }) },
     ) { innerPadding ->
         Column(
+            // 不套 verticalScroll：整页内容已收进一屏，套了反而和手势/自动滚动打架（实机反馈仍能上下滑）
             modifier = Modifier
                 .padding(innerPadding)
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
+                .padding(8.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             PomodoroDial(
@@ -118,10 +135,14 @@ fun FocusScreen(modifier: Modifier = Modifier) {
                 elapsedMillis = timer.elapsedMillis,
             )
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = when (timer.phase) {
-                    TimerPhase.IDLE -> "准备开始 · $workMinutes 分钟"
+                    TimerPhase.IDLE -> when (selectedMode) {
+                        TimerMode.POMODORO -> "准备开始 · 番茄钟 $workMinutes 分钟"
+                        TimerMode.COUNTDOWN -> "准备开始 · 倒计时 $customMinutes 分钟"
+                        TimerMode.COUNTUP -> "准备开始 · 正计时"
+                    }
                     TimerPhase.RUNNING -> if (timer.mode == TimerMode.COUNTUP) "计时中" else "专注中"
                     TimerPhase.PAUSED -> "已暂停"
                     TimerPhase.COMPLETED -> "已完成 · 记录 ${timer.completedMinutes} 分钟"
@@ -130,7 +151,42 @@ fun FocusScreen(modifier: Modifier = Modifier) {
                 color = MaterialTheme.colorScheme.onSurface,
             )
 
-            Spacer(modifier = Modifier.height(8.dp))
+            // 模式与时长选择：只在 IDLE/COMPLETED 可改（计时中锁定，同关联选择的 enabled 语义）
+            if (timer.phase == TimerPhase.IDLE || timer.phase == TimerPhase.COMPLETED) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TimerMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = selectedMode == mode,
+                            onClick = { viewModel.selectMode(mode) },
+                            label = { Text(mode.label) },
+                        )
+                    }
+                }
+                if (selectedMode == TimerMode.COUNTDOWN) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    // 自定义时长：点中间分钟数弹数字输入（任意分钟），两侧 ±5 微调，下方预设一键直达
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedButton(onClick = { viewModel.adjustCustomMinutes(-5) }) { Text("-5") }
+                        Button(onClick = { showingMinutesInput = true }) { Text("$customMinutes 分钟") }
+                        OutlinedButton(onClick = { viewModel.adjustCustomMinutes(5) }) { Text("+5") }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        CUSTOM_PRESETS.forEach { preset ->
+                            FilterChip(
+                                selected = customMinutes == preset,
+                                onClick = { viewModel.setCustomMinutes(preset) },
+                                label = { Text("$preset") },
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = "关联：${selectedLink?.label ?: "无"}",
@@ -145,7 +201,7 @@ fun FocusScreen(modifier: Modifier = Modifier) {
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(4.dp))
             // 结束语义三分：正计时「停止」（落库已走时长）；倒计时/番茄「完成」（提前确认完成）
             // 与「放弃」（记未完成）；完成态提供「再来一轮 / 关闭」。
             val isCountUp = timer.mode == TimerMode.COUNTUP
@@ -177,7 +233,7 @@ fun FocusScreen(modifier: Modifier = Modifier) {
                 }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = "今日 $todayCount 个番茄 · 共 $todayMinutes 分钟",
                 style = MaterialTheme.typography.bodyMedium,
@@ -213,4 +269,35 @@ fun FocusScreen(modifier: Modifier = Modifier) {
             confirmButton = { TextButton(onClick = { pickingLink = false }) { Text("关闭") } },
         )
     }
+
+    // 滚轮中心点击 → 手动输入任意分钟（覆盖滚轮 120 上限之外的时长）
+    if (showingMinutesInput) {
+        var input by remember { mutableStateOf(customMinutes.toString()) }
+        AlertDialog(
+            onDismissRequest = { showingMinutesInput = false },
+            title = { Text("输入倒计时分钟") },
+            text = {
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { text -> input = text.filter { it.isDigit() }.take(3) },
+                    label = { Text("1-240 分钟") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    input.toIntOrNull()?.let { viewModel.setCustomMinutes(it) }
+                    showingMinutesInput = false
+                }) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showingMinutesInput = false }) { Text("取消") }
+            },
+        )
+    }
 }
+
+/** 自定义倒计时的常用预设（分钟），一键选中 */
+private val CUSTOM_PRESETS = listOf(15, 25, 45, 60, 90)

@@ -58,8 +58,8 @@ fun PomodoroDial(
         else -> PomodoroService.formatClock(remainingMillis)
     }
 
-    Box(modifier = modifier.size(260.dp), contentAlignment = Alignment.Center) {
-        Canvas(modifier = Modifier.size(260.dp)) {
+    Box(modifier = modifier.size(240.dp), contentAlignment = Alignment.Center) {
+        Canvas(modifier = Modifier.size(240.dp)) {
             val stroke = 18.dp.toPx()
             // 内缩半个线宽，避免圆弧贴边被裁掉
             val inset = stroke / 2f
